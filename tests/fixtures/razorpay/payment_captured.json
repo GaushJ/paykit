@@ -1,0 +1,48 @@
+{
+  "entity": "event",
+  "account_id": "acc_BFQ7uQEaa7j2z3",
+  "event": "payment.captured",
+  "contains": ["payment", "order"],
+  "payload": {
+    "payment": {
+      "entity": {
+        "id": "pay_FS7Y0hIeE1AJXQ",
+        "entity": "payment",
+        "amount": 49900,
+        "currency": "INR",
+        "status": "captured",
+        "order_id": "order_FS7X6f5hIeYaXd",
+        "invoice_id": null,
+        "international": false,
+        "method": "upi",
+        "amount_refunded": 0,
+        "amount_transferred": 0,
+        "refund_status": null,
+        "captured": true,
+        "email": "customer@example.com",
+        "contact": "+919876543210",
+        "fee": 1179,
+        "tax": 180,
+        "error_code": null,
+        "error_description": null,
+        "created_at": 1567674599
+      }
+    },
+    "order": {
+      "entity": {
+        "id": "order_FS7X6f5hIeYaXd",
+        "entity": "order",
+        "amount": 49900,
+        "amount_paid": 49900,
+        "amount_due": 0,
+        "currency": "INR",
+        "receipt": "inv_1001",
+        "status": "paid",
+        "attempts": 1,
+        "notes": { "plan": "pro" },
+        "created_at": 1567674000
+      }
+    }
+  },
+  "created_at": 1567674612
+}

@@ -1,0 +1,35 @@
+{
+  "entity": "event",
+  "account_id": "acc_BFQ7uQEaa7j2z3",
+  "event": "subscription.halted",
+  "contains": ["subscription"],
+  "payload": {
+    "subscription": {
+      "entity": {
+        "id": "sub_DEX6xcJ1HSW4CR",
+        "entity": "subscription",
+        "plan_id": "plan_DDMCa3E1i5J8mm",
+        "status": "halted",
+        "current_start": 1570266600,
+        "current_end": 1572858600,
+        "ended_at": null,
+        "quantity": 1,
+        "notes": { "user_id": "user_42" },
+        "charge_at": 1572858600,
+        "start_at": 1567674600,
+        "end_at": null,
+        "auth_attempts": 4,
+        "total_count": 12,
+        "paid_count": 2,
+        "customer_notify": true,
+        "created_at": 1567674000,
+        "expire_by": null,
+        "short_url": "https://rzp.io/i/abcdef",
+        "has_scheduled_changes": false,
+        "change_scheduled_at": null,
+        "remaining_count": 10
+      }
+    }
+  },
+  "created_at": 1572858700
+}

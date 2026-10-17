@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "paykit"
+version = "0.1.0"
+description = "Provider-agnostic payments SDK for Python (Razorpay v1)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+]
+
+[project.optional-dependencies]
+fastapi = [
+    "fastapi>=0.110",
+]
+sql = [
+    "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.13",
+    "asyncpg>=0.29",
+]
+service = [
+    "paykit[fastapi]",
+    "paykit[sql]",
+    "uvicorn>=0.29",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.20",
+    "ruff>=0.4",
+    "mypy>=1.9",
+    "aiosqlite>=0.20",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+paykit = "paykit.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["paykit"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    # FastAPI's own TestClient still imports httpx via starlette; harmless
+    # until starlette actually drops httpx support. Despite the name,
+    # StarletteDeprecationWarning subclasses UserWarning, not DeprecationWarning.
+    "ignore:Using .httpx. with .starlette.testclient. is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "paykit.core.*"
+strict = true

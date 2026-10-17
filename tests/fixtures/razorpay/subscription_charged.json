@@ -1,0 +1,59 @@
+{
+  "entity": "event",
+  "account_id": "acc_BFQ7uQEaa7j2z3",
+  "event": "subscription.charged",
+  "contains": ["subscription", "payment"],
+  "payload": {
+    "subscription": {
+      "entity": {
+        "id": "sub_DEX6xcJ1HSW4CR",
+        "entity": "subscription",
+        "plan_id": "plan_DDMCa3E1i5J8mm",
+        "status": "active",
+        "current_start": 1570266600,
+        "current_end": 1572858600,
+        "ended_at": null,
+        "quantity": 1,
+        "notes": { "user_id": "user_42" },
+        "charge_at": 1572858600,
+        "start_at": 1567674600,
+        "end_at": null,
+        "auth_attempts": 0,
+        "total_count": 12,
+        "paid_count": 2,
+        "customer_notify": true,
+        "created_at": 1567674000,
+        "expire_by": null,
+        "short_url": "https://rzp.io/i/abcdef",
+        "has_scheduled_changes": false,
+        "change_scheduled_at": null,
+        "remaining_count": 10
+      }
+    },
+    "payment": {
+      "entity": {
+        "id": "pay_FS8AbCdEfGhIjK",
+        "entity": "payment",
+        "amount": 49900,
+        "currency": "INR",
+        "status": "captured",
+        "order_id": null,
+        "invoice_id": "inv_FS8BcDeFgH1234",
+        "international": false,
+        "method": "card",
+        "amount_refunded": 0,
+        "amount_transferred": 0,
+        "refund_status": null,
+        "captured": true,
+        "email": "customer@example.com",
+        "contact": "+919876543210",
+        "fee": 1179,
+        "tax": 180,
+        "error_code": null,
+        "error_description": null,
+        "created_at": 1570266601
+      }
+    }
+  },
+  "created_at": 1570266610
+}

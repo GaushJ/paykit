@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>PayKit checkout example</title>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; }
+  button { font-size: 1rem; padding: 0.6rem 1.2rem; cursor: pointer; }
+  pre { white-space: pre-wrap; background: #f4f4f4; padding: 0.75rem; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>PayKit checkout example</h1>
+<p>This calls the app's own <code>/payments/orders</code> and
+<code>/payments/confirm</code> routes (mounted from paykit's FastAPI router).</p>
+<button id="pay">Pay &#8377;499.00</button>
+<pre id="status"></pre>
+
+<script>
+// Demo-only credentials for the example app's HTTP Basic auth stand-in.
+// Swap for however your real app authenticates the browser.
+const AUTH_HEADER = "Basic " + btoa("demo_user:unused");
+
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: AUTH_HEADER },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail || JSON.stringify(data));
+  }
+  return data;
+}
+
+async function pay() {
+  const status = document.getElementById("status");
+  status.textContent = "Creating order...";
+
+  let order, checkout;
+  try {
+    ({ order, checkout } = await postJson("/payments/orders", {
+      receipt: "demo_" + Date.now(),
+    }));
+  } catch (err) {
+    status.textContent = "Failed to create order: " + err.message;
+    return;
+  }
+
+  const rzp = new Razorpay({
+    key: checkout.key,
+    amount: checkout.amount,
+    currency: checkout.currency,
+    name: checkout.name,
+    description: checkout.description,
+    order_id: checkout.order_id,
+    prefill: checkout.prefill,
+    notes: checkout.notes,
+    handler: async function (response) {
+      status.textContent = "Confirming payment...";
+      try {
+        const payment = await postJson("/payments/confirm", {
+          provider_order_id: response.razorpay_order_id,
+          provider_payment_id: response.razorpay_payment_id,
+          signature: response.razorpay_signature,
+        });
+        status.textContent =
+          "Payment " + payment.status + " for order " + order.id + ".\n" +
+          "The payment.captured *webhook* (not this page) is what actually\n" +
+          "grants access server-side - this just gives the UI a fast answer.";
+      } catch (err) {
+        status.textContent = "Confirm failed: " + err.message;
+      }
+    },
+    modal: {
+      ondismiss: function () {
+        status.textContent = "Checkout closed.";
+      },
+    },
+  });
+  rzp.open();
+}
+
+document.getElementById("pay").addEventListener("click", pay);
+</script>
+</body>
+</html>

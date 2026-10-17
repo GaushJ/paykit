@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: paykit
+      POSTGRES_PASSWORD: paykit
+      POSTGRES_DB: paykit
+    ports:
+      - "5433:5432"
+    volumes:
+      - paykit_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paykit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    command: ["paykit", "db", "upgrade"]
+    environment:
+      PAYKIT_DATABASE_URL: postgresql+asyncpg://paykit:paykit@postgres:5432/paykit
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  service:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      PAYKIT_DATABASE_URL: postgresql+asyncpg://paykit:paykit@postgres:5432/paykit
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  paykit_postgres_data:
