@@ -14,9 +14,11 @@ if TYPE_CHECKING:
 def _alembic_config() -> Config:
     from alembic.config import Config
 
-    package_root = Path(__file__).resolve().parent.parent
-    cfg = Config(str(package_root / "alembic.ini"))
-    cfg.set_main_option("script_location", str(package_root / "migrations"))
+    # alembic.ini and migrations/ ship inside the package, so this works from
+    # an installed wheel as well as from a source checkout.
+    package_dir = Path(__file__).resolve().parent
+    cfg = Config(str(package_dir / "alembic.ini"))
+    cfg.set_main_option("script_location", str(package_dir / "migrations"))
     return cfg
 
 

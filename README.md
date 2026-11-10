@@ -1,4 +1,4 @@
-# PayKit
+# OpenPayKit
 
 A provider-agnostic payments SDK for Python. v1 ships a **Razorpay** adapter (India: UPI, cards,
 netbanking, wallets; one-time payments, refunds, subscriptions). App code talks only to
@@ -6,7 +6,7 @@ netbanking, wallets; one-time payments, refunds, subscriptions). App code talks 
 new adapter, not a rewrite.
 
 Two ways to use it:
-1. **Embedded library** — `pip install paykit[fastapi]`, mount a router in your own FastAPI app.
+1. **Embedded library** — `pip install openpaykit[fastapi]`, mount a router in your own FastAPI app.
 2. **Standalone service** — a small deployable FastAPI app exposing REST + outbound webhooks, so
    backends in any language (Node, Go, ...) can use it over HTTP.
 
@@ -18,11 +18,13 @@ state transitions are monotonic so a late/out-of-order webhook can't move a paym
 
 ## Install
 
+The package is published as `openpaykit`; the import name is `paykit` and the CLI is `paykit`.
+
 ```bash
-pip install paykit[fastapi]   # embedded library, mounted in your own app
-pip install paykit[sql]       # + SQLAlchemy/Alembic persistence (Postgres/SQLite)
-pip install paykit[service]   # fastapi + sql + uvicorn, for the standalone service
-pip install paykit[dev]       # + pytest/ruff/mypy, for working on paykit itself
+pip install openpaykit[fastapi]   # embedded library, mounted in your own app
+pip install openpaykit[sql]       # + SQLAlchemy/Alembic persistence (Postgres/SQLite)
+pip install openpaykit[service]   # fastapi + sql + uvicorn, for the standalone service
+pip install openpaykit[dev]       # + pytest/ruff/mypy, for working on paykit itself
 ```
 
 ## 5-minute quickstart (no Razorpay account needed)
@@ -96,7 +98,7 @@ This mounts `POST /payments/orders`, `POST /payments/confirm`, `GET /payments/or
 `POST /payments/{id}/refunds`, `POST /payments/subscriptions(+/{id}/cancel)`, and
 `POST /payments/webhooks/razorpay`. See `examples/fastapi_embedded/` for a complete runnable app
 + `checkout.html` that opens Razorpay Checkout and posts the result back — run it with
-`pip install paykit[fastapi] uvicorn` (an ASGI server isn't part of the `fastapi` extra, since a
+`pip install openpaykit[fastapi] uvicorn` (an ASGI server isn't part of the `fastapi` extra, since a
 real app usually already has one) then
 `uvicorn examples.fastapi_embedded.main:app --reload`.
 
