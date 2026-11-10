@@ -7,10 +7,21 @@ contract can evolve independently of internals.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from paykit.core.models import Money, Order, Payment, Refund, Subscription
+
+# Untrusted client input is bounded. Limits follow Razorpay's own (notes:
+# max 15 keys, values <= 256 chars; receipt <= 40 chars) so requests fail
+# fast with a 422 here instead of as an opaque provider error.
+ShortStr = Annotated[str, StringConstraints(max_length=256)]
+KeyStr = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+Notes = Annotated[dict[KeyStr, ShortStr], Field(max_length=15)]
+IdempotencyKey = Annotated[
+    str, StringConstraints(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
+]
 
 
 class MoneyOut(BaseModel):
@@ -130,15 +141,17 @@ class CreateOrderRequest(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    receipt: str | None = Field(default=None, description="App's own reference, e.g. an invoice id")
-    metadata: dict[str, str] = Field(
+    receipt: str | None = Field(
+        default=None, max_length=40, description="App's own reference, e.g. an invoice id"
+    )
+    metadata: Notes = Field(
         default_factory=dict, description="Forwarded to the provider as order notes"
     )
-    idempotency_key: str | None = Field(
+    idempotency_key: IdempotencyKey | None = Field(
         default=None,
         description="Reusing this key returns the same order instead of creating a new one",
     )
-    prefill: dict[str, str] | None = Field(
+    prefill: Annotated[dict[KeyStr, ShortStr], Field(max_length=10)] | None = Field(
         default=None, description="e.g. {\"email\": ..., \"contact\": ...} for Razorpay Checkout"
     )
 
@@ -159,18 +172,19 @@ class RefundRequest(BaseModel):
     amount: MoneyOut | None = Field(
         default=None, description="Full refund if omitted"
     )
-    reason: str | None = None
-    metadata: dict[str, str] = Field(default_factory=dict)
+    reason: str | None = Field(default=None, max_length=256)
+    metadata: Notes = Field(default_factory=dict)
 
 
 class CreateSubscriptionRequest(BaseModel):
-    plan_id: str = Field(description="paykit's own plan id, from create_plan()")
-    total_count: int = Field(description="Total number of billing cycles")
+    plan_id: str = Field(max_length=64, description="paykit's own plan id, from create_plan()")
+    total_count: int = Field(ge=1, le=1200, description="Total number of billing cycles")
     customer_notify: bool = True
-    metadata: dict[str, str] = Field(default_factory=dict)
+    metadata: Notes = Field(default_factory=dict)
     start_at: datetime | None = None
     customer_ref: str | None = Field(
         default=None,
+        max_length=128,
         description=(
             "Only read by a customer_ref_getter that needs it from the body "
             "(the standalone service, §10); the embedded integration (§9) "

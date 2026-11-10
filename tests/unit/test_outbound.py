@@ -47,6 +47,8 @@ async def test_successful_delivery_marks_delivered_with_correct_headers() -> Non
     sender = make_sender(repository=repo)
 
     await sender.handle_event(make_event("evt_1"))
+    assert route.call_count == 0  # enqueue only: never sends inline
+    assert await sender.process_due() == 1
 
     sent = route.calls.last.request
     assert sent.headers["X-PayKit-Event-Id"] == "evt_1"
@@ -71,6 +73,7 @@ async def test_failed_delivery_schedules_retry() -> None:
     sender = make_sender(repository=repo)
 
     await sender.handle_event(make_event("evt_1"))
+    await sender.process_due()
 
     delivery = next(iter(repo._deliveries.values()))
     assert delivery.status == DeliveryStatus.PENDING
@@ -88,6 +91,7 @@ async def test_exhausted_retries_marks_failed() -> None:
     sender = make_sender(repository=repo)
 
     await sender.handle_event(make_event("evt_1"))
+    await sender.process_due()
     delivery = next(iter(repo._deliveries.values()))
 
     # Exhaust the remaining retries directly via _attempt (bypassing the
@@ -108,8 +112,6 @@ async def test_run_worker_delivers_due_items_and_stops_on_cancel() -> None:
     sender = make_sender(repository=repo)
 
     await sender.handle_event(make_event("evt_1"))
-    # handle_event already attempts delivery once and succeeds, so nothing
-    # should be "due" - simulate a delivery that's due right now instead.
     from paykit.service_app.outbound import OutboundDelivery
 
     pending = OutboundDelivery(

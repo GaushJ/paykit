@@ -22,11 +22,6 @@ def paykit_lifespan(
         try:
             yield
         finally:
-            provider_aclose = getattr(service._provider, "aclose", None)  # noqa: SLF001
-            if provider_aclose is not None:
-                await provider_aclose()
-            repository_dispose = getattr(service._repository, "dispose", None)  # noqa: SLF001
-            if repository_dispose is not None:
-                await repository_dispose()
+            await service.aclose()
 
     return _lifespan

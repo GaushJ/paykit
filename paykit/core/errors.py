@@ -48,3 +48,9 @@ class AmountMismatchError(PayKitError):
 
 class IdempotencyConflictError(PayKitError):
     """Raised when an idempotency key is reused with a different amount."""
+
+
+class DuplicateError(PayKitError):
+    """Raised by a repository when an insert violates a uniqueness constraint
+    (e.g. two concurrent requests creating the same provider payment).
+    PaymentService catches it and re-reads the winning row."""

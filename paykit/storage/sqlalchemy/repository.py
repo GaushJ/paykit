@@ -13,29 +13,58 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, TypeVar
 
-from sqlalchemy import Table, select, update
+from sqlalchemy import Table, delete, event, select, update
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from paykit.core.errors import DuplicateError
 from paykit.core.models import Money, Order, Payment, Plan, Refund, Subscription
 from paykit.storage.sqlalchemy.tables import PayKitTables
 
 T = TypeVar("T")
 
-_active_connection: contextvars.ContextVar[AsyncConnection | None] = contextvars.ContextVar(
-    "paykit_active_connection", default=None
-)
-
-
 def _ensure_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def enable_sqlite_savepoints(engine: AsyncEngine) -> None:
+    """Make SAVEPOINT/rollback work on SQLite (pysqlite/aiosqlite).
+
+    The stdlib sqlite3 driver defers BEGIN until the first DML statement, so
+    a SAVEPOINT issued first becomes the *outermost* transaction and its
+    RELEASE commits - an enclosing rollback then silently does nothing.
+    This is SQLAlchemy's documented fix: take BEGIN control away from the
+    driver. Idempotent; no-op for other dialects.
+    """
+    sync_engine = engine.sync_engine
+    if sync_engine.dialect.name != "sqlite" or event.contains(
+        sync_engine, "begin", _sqlite_emit_begin
+    ):
+        return
+    event.listen(sync_engine, "connect", _sqlite_disable_driver_tx)
+    event.listen(sync_engine, "begin", _sqlite_emit_begin)
+
+
+def _sqlite_disable_driver_tx(dbapi_connection: Any, _record: Any) -> None:
+    dbapi_connection.isolation_level = None
+
+
+def _sqlite_emit_begin(conn: Any) -> None:
+    conn.exec_driver_sql("BEGIN")
 
 
 class SQLAlchemyRepository:
     def __init__(self, engine: AsyncEngine, *, table_prefix: str = "paykit_") -> None:
         self._engine = engine
         self._tables = PayKitTables(table_prefix)
+        # Per-instance, so two repositories on different engines never
+        # share (or hijack) each other's active transaction.
+        self._active_connection: contextvars.ContextVar[AsyncConnection | None] = (
+            contextvars.ContextVar(f"paykit_active_connection_{id(self)}", default=None)
+        )
+        if engine.dialect.name == "sqlite":
+            enable_sqlite_savepoints(engine)
 
     async def create_all(self) -> None:
         """Create tables directly (tests / quickstarts). Production apps should
@@ -43,29 +72,45 @@ class SQLAlchemyRepository:
         async with self._engine.begin() as conn:
             await conn.run_sync(self._tables.metadata.create_all)
 
+    @property
+    def engine(self) -> AsyncEngine:
+        return self._engine
+
     async def dispose(self) -> None:
         await self._engine.dispose()
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[None]:
-        if _active_connection.get() is not None:
+        if self._active_connection.get() is not None:
             yield  # nested: reuse the outer connection/transaction
             return
         async with self._engine.begin() as conn:
-            token = _active_connection.set(conn)
+            token = self._active_connection.set(conn)
             try:
                 yield
             finally:
-                _active_connection.reset(token)
+                self._active_connection.reset(token)
 
     @asynccontextmanager
     async def _connection(self) -> AsyncGenerator[AsyncConnection]:
-        conn = _active_connection.get()
+        conn = self._active_connection.get()
         if conn is not None:
             yield conn
             return
         async with self._engine.begin() as conn:
             yield conn
+
+    async def _insert(self, table: Table, values: dict[str, Any]) -> None:
+        """INSERT inside a SAVEPOINT. A unique-constraint violation (a
+        concurrent request won the race) raises DuplicateError and only
+        rolls back the savepoint - the caller's outer transaction survives
+        so the service can re-read the winning row and carry on."""
+        async with self._connection() as conn:
+            try:
+                async with conn.begin_nested():
+                    await conn.execute(table.insert().values(**values))
+            except IntegrityError as exc:
+                raise DuplicateError(f"duplicate row in {table.name}") from exc
 
     def _maybe_for_update(self, stmt: Any, *, for_update: bool) -> Any:
         if for_update and self._engine.dialect.name == "postgresql":
@@ -108,8 +153,7 @@ class SQLAlchemyRepository:
         )
 
     async def create_order(self, order: Order) -> Order:
-        async with self._connection() as conn:
-            await conn.execute(self._tables.orders.insert().values(**self._order_to_row(order)))
+        await self._insert(self._tables.orders, self._order_to_row(order))
         return order.model_copy()
 
     async def get_order(self, order_id: str) -> Order | None:
@@ -141,12 +185,19 @@ class SQLAlchemyRepository:
             self._tables.orders, self._row_to_order, idempotency_key=idempotency_key
         )
 
-    async def list_non_final_orders(self, since: datetime) -> list[Order]:
+    async def list_non_final_orders(
+        self, since: datetime, *, limit: int | None = None
+    ) -> list[Order]:
         non_final = {"created", "attempted"}
         async with self._connection() as conn:
-            stmt = select(self._tables.orders).where(
-                self._tables.orders.c.status.in_(non_final),
-                self._tables.orders.c.created_at >= since,
+            stmt = (
+                select(self._tables.orders)
+                .where(
+                    self._tables.orders.c.status.in_(non_final),
+                    self._tables.orders.c.created_at >= since,
+                )
+                .order_by(self._tables.orders.c.created_at)
+                .limit(limit)
             )
             result = await conn.execute(stmt)
             return [self._row_to_order(row._mapping) for row in result]
@@ -191,14 +242,13 @@ class SQLAlchemyRepository:
         )
 
     async def create_payment(self, payment: Payment) -> Payment:
-        async with self._connection() as conn:
-            await conn.execute(
-                self._tables.payments.insert().values(**self._payment_to_row(payment))
-            )
+        await self._insert(self._tables.payments, self._payment_to_row(payment))
         return payment.model_copy()
 
-    async def get_payment(self, payment_id: str) -> Payment | None:
-        return await self._get_one(self._tables.payments, self._row_to_payment, id=payment_id)
+    async def get_payment(self, payment_id: str, *, for_update: bool = False) -> Payment | None:
+        return await self._get_one(
+            self._tables.payments, self._row_to_payment, for_update=for_update, id=payment_id
+        )
 
     async def update_payment(self, payment: Payment) -> Payment:
         async with self._connection() as conn:
@@ -229,12 +279,19 @@ class SQLAlchemyRepository:
             result = await conn.execute(stmt)
             return [self._row_to_payment(row._mapping) for row in result]
 
-    async def list_non_final_payments(self, since: datetime) -> list[Payment]:
+    async def list_non_final_payments(
+        self, since: datetime, *, limit: int | None = None
+    ) -> list[Payment]:
         non_final = {"created", "authorized"}
         async with self._connection() as conn:
-            stmt = select(self._tables.payments).where(
-                self._tables.payments.c.status.in_(non_final),
-                self._tables.payments.c.created_at >= since,
+            stmt = (
+                select(self._tables.payments)
+                .where(
+                    self._tables.payments.c.status.in_(non_final),
+                    self._tables.payments.c.created_at >= since,
+                )
+                .order_by(self._tables.payments.c.created_at)
+                .limit(limit)
             )
             result = await conn.execute(stmt)
             return [self._row_to_payment(row._mapping) for row in result]
@@ -267,10 +324,7 @@ class SQLAlchemyRepository:
         )
 
     async def create_refund(self, refund: Refund) -> Refund:
-        async with self._connection() as conn:
-            await conn.execute(
-                self._tables.refunds.insert().values(**self._refund_to_row(refund))
-            )
+        await self._insert(self._tables.refunds, self._refund_to_row(refund))
         return refund.model_copy()
 
     async def get_refund(self, refund_id: str) -> Refund | None:
@@ -318,8 +372,7 @@ class SQLAlchemyRepository:
         )
 
     async def create_plan(self, plan: Plan) -> Plan:
-        async with self._connection() as conn:
-            await conn.execute(self._tables.plans.insert().values(**self._plan_to_row(plan)))
+        await self._insert(self._tables.plans, self._plan_to_row(plan))
         return plan.model_copy()
 
     async def get_plan(self, plan_id: str) -> Plan | None:
@@ -367,12 +420,7 @@ class SQLAlchemyRepository:
         )
 
     async def create_subscription(self, subscription: Subscription) -> Subscription:
-        async with self._connection() as conn:
-            await conn.execute(
-                self._tables.subscriptions.insert().values(
-                    **self._subscription_to_row(subscription)
-                )
-            )
+        await self._insert(self._tables.subscriptions, self._subscription_to_row(subscription))
         return subscription.model_copy()
 
     async def get_subscription(self, subscription_id: str) -> Subscription | None:
@@ -415,6 +463,15 @@ class SQLAlchemyRepository:
             except IntegrityError:
                 return False
             return True
+
+    async def prune_processed_events(self, older_than: datetime) -> int:
+        async with self._connection() as conn:
+            result = await conn.execute(
+                delete(self._tables.processed_events).where(
+                    self._tables.processed_events.c.processed_at < older_than
+                )
+            )
+            return int(result.rowcount or 0)
 
     # -- Shared helper -----------------------------------------------------------
 

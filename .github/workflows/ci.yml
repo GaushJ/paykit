@@ -5,19 +5,110 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: CI only needs to read the repo.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
       - run: pip install -e ".[service,dev]"
       - run: ruff check .
       - run: mypy paykit
       - run: pytest
+
+  postgres:
+    # Runs the repository contract suite and the Alembic migrations against a
+    # real Postgres: row locks, savepoints and unique-violation handling
+    # differ from SQLite.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: paykit
+          POSTGRES_PASSWORD: paykit
+          POSTGRES_DB: paykit
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U paykit"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PAYKIT_DATABASE_URL: postgresql+asyncpg://paykit:paykit@localhost:5432/paykit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[service,dev]"
+      - name: Migrations upgrade -> downgrade -> upgrade
+        run: |
+          paykit db upgrade
+          python -c "from alembic import command; from paykit.cli import _alembic_config as c; command.downgrade(c(), 'base')"
+          paykit db upgrade
+      - name: Repository contract suite on Postgres
+        env:
+          PAYKIT_TEST_DATABASE_URL: postgresql+asyncpg://paykit:paykit@localhost:5432/paykit_test
+        run: |
+          PGPASSWORD=paykit psql -h localhost -U paykit -d paykit -c "CREATE DATABASE paykit_test"
+          pytest tests/integration/test_repository_contract.py
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # full history for the secret scan
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          pip install pip-audit
+          pip install ".[service]"
+          pip-audit --skip-editable
+      - name: Scan git history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+      - name: Installed wheel ships migrations
+        run: |
+          python -m venv /tmp/w && /tmp/w/bin/pip install dist/*.whl
+          /tmp/w/bin/python -c "import paykit, pathlib; p = pathlib.Path(paykit.__file__).parent; assert (p/'alembic.ini').exists() and (p/'migrations/versions').is_dir()"

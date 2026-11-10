@@ -52,7 +52,7 @@ async def main():
     print(service.checkout_config(order))  # -> hand this to the frontend
 
     # --- simulate what a real checkout + webhook would do ---
-    provider = service._provider
+    provider = service.provider
     payment = provider.simulate_payment(order.provider_order_id)
     result = provider.make_checkout_result(payment, provider_order_id=order.provider_order_id)
     await service.confirm_checkout(result)  # fast UI answer; does NOT fire "payment.captured"
@@ -91,8 +91,14 @@ app.include_router(create_payments_router(
     auth_dependency=get_current_user,               # your app's own auth
     customer_ref_getter=lambda user, body: user.id,  # how to tag orders with this user
     amount_resolver=lambda body, user: price_the_cart(body, user),  # NEVER trust a client amount
+    admin_dependency=require_admin,                 # optional: mounts the refund route
 ))
 ```
+
+The refund route (`POST /payments/{payment_id}/refunds`) is only mounted when you pass an
+`admin_dependency`, so ordinary logged-in users can never issue refunds. Ownership is enforced on
+`/confirm`, `GET /orders/{id}` and subscription cancel, and idempotency keys are scoped per
+customer.
 
 This mounts `POST /payments/orders`, `POST /payments/confirm`, `GET /payments/orders/{id}`,
 `POST /payments/{id}/refunds`, `POST /payments/subscriptions(+/{id}/cancel)`, and
@@ -104,6 +110,21 @@ real app usually already has one) then
 
 Before going live: run `paykit db upgrade` (Alembic; needs `PAYKIT_DATABASE_URL`), and add the
 webhook URL + secret in the Razorpay dashboard — see **Go-live checklist** below.
+
+### Configuration
+
+| Variable (`PAYKIT_` prefix) | Default | Notes |
+|---|---|---|
+| `PROVIDER` | `razorpay` | `razorpay` or `dummy` (dev/tests only; logs a warning) |
+| `RAZORPAY_KEY_ID` / `_KEY_SECRET` / `_WEBHOOK_SECRET` | — | Required when `PROVIDER=razorpay` |
+| `DATABASE_URL` | unset → in-memory | Async driver URL, e.g. `postgresql+asyncpg://...`. **Required in production.** |
+| `TABLE_PREFIX` | `paykit_` | `[a-z][a-z0-9_]*` |
+| `DEFAULT_CURRENCY` | `INR` | Standalone service default when a request omits `currency` |
+| `HTTP_TIMEOUT_SECONDS` | `15` | Provider API timeout |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | `5` / `10` | Per process. Keep `processes × (size + overflow)` below Postgres `max_connections` |
+| `DB_POOL_RECYCLE_SECONDS` | `1800` | |
+| `SERVICE_API_KEYS` | — | Standalone service: comma-separated bearer keys |
+| `OUTBOUND_WEBHOOK_URL` / `_SECRET` | — | Standalone service. HTTPS required with live keys; the secret is required whenever the URL is set |
 
 ## Standalone service
 
@@ -136,8 +157,12 @@ derive them from), and read/cancel routes skip the ownership check accordingly. 
 event also gets POSTed to `PAYKIT_OUTBOUND_WEBHOOK_URL`, signed the same way Razorpay signs
 webhooks to you: `HMAC_SHA256(secret, f"{timestamp}.{raw_body}")` in `X-PayKit-Signature`, with
 `X-PayKit-Event-Id` and `X-PayKit-Timestamp` alongside it — reject anything older than 5 minutes.
-Delivery retries with backoff (1m, 5m, 30m, 2h, 6h) and survives a restart (persisted in
-`paykit_outbound_deliveries`). See `paykit/service_app/outbound.py`'s docstring for the exact
+Delivery is at-least-once (dedupe on `X-PayKit-Event-Id`) and asynchronous: events are queued in
+`paykit_outbound_deliveries` and sent by a background worker, so a slow receiver never slows the
+Razorpay webhook response. Failed deliveries retry with backoff (1m, 5m, 30m, 2h, 6h) and survive
+a restart. Workers claim deliveries with a lease, so you can run several replicas against one
+database without duplicate sends. `GET /healthz` is liveness; `GET /readyz` also checks the
+database. See `paykit/service_app/outbound.py`'s docstring for the exact
 receiver-side verification code, and `examples/node_client/verify_webhook.js` for a working one.
 
 ## How to add a new provider
@@ -170,7 +195,7 @@ Paddle, Stripe, ...):
 
 ```bash
 pip install -e ".[dev,fastapi,sql]"
-pytest                       # 226+ tests: unit (signatures/mapping/state/service) + integration
+pytest                       # 280+ tests: unit (signatures/mapping/state/service) + integration
                               #  (repository contract run against both in-memory & SQLAlchemy,
                               #  FastAPI router, standalone service, full payment flow)
 ruff check .
@@ -180,20 +205,37 @@ mypy paykit/core             # --strict; the rest of the package is checked non-
 `PAYKIT_TEST_DATABASE_URL` (a `postgresql+asyncpg://...` URL) runs the repository contract suite
 against real Postgres instead of in-memory SQLite, if set.
 
-## Security checklist
+## Security
 
-- [x] Webhook signature verified on **raw body bytes** using the **webhook secret**, never a
-      re-serialized copy
-- [x] Constant-time comparisons everywhere (`hmac.compare_digest`)
-- [x] Order amount decided server-side (`amount_resolver`); verified again against the fetched
-      payment in `confirm_checkout`
-- [x] Event dedupe via a unique DB constraint (`paykit_processed_events`), not an in-memory set
-- [x] Secrets are `SecretStr`, never logged
-- [ ] HTTPS for your live-mode webhook URL — `PayKitSettings` warns at startup if a live key is
-      paired with a non-HTTPS `PAYKIT_OUTBOUND_WEBHOOK_URL`, but can't enforce it for the inbound
-      Razorpay webhook URL (that's configured in Razorpay's dashboard, outside paykit)
-- [ ] Rate-limit the webhook route at your reverse proxy/gateway (it's intentionally excluded from
-      app auth — signature verification is its only gate)
+Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
+
+What paykit does for you:
+
+- Webhook signatures are verified on the **raw body bytes** with the webhook secret before any
+  parsing. Comparisons are constant-time (`hmac.compare_digest`). The webhook body size is capped
+  (`max_webhook_body_bytes`, 256 KiB by default).
+- Order amounts are decided server-side (`amount_resolver`). They are checked against the
+  provider's view of the payment in `confirm_checkout` and again before a webhook marks an order
+  PAID.
+- Ownership checks on `/confirm`, order reads and subscription cancels. Idempotency keys are scoped
+  per customer, and the refund route requires `admin_dependency`.
+- Webhooks are deduplicated by a unique DB constraint. Concurrent deliveries and `/confirm` races
+  are serialized with row locks (Postgres) and savepoint-protected inserts.
+- Refunds are validated against the remaining refundable balance and currency, and never
+  double-counted when the refund webhook arrives first.
+- Client input is bounded. Provider IDs are validated before they go into REST paths, and provider
+  error details are logged, not returned to end users (a generic 502).
+- Secrets are `SecretStr` and never logged. A live key with a non-HTTPS outbound webhook URL is a
+  startup error. `DummyProvider` signs with a random per-process secret.
+
+What you still own:
+
+- [ ] HTTPS for the inbound webhook URL you register in the Razorpay dashboard.
+- [ ] Rate-limit the webhook route and API at your reverse proxy. The webhook route is
+      intentionally unauthenticated: signature verification is its gate.
+- [ ] Grant entitlements from **webhook events** (`payment.captured`), not from `/confirm`.
+- [ ] Use Postgres in production. `InMemoryRepository` loses state on restart, so a customer
+      could be charged and never granted access.
 
 ## Go-live checklist
 
@@ -205,7 +247,10 @@ against real Postgres instead of in-memory SQLite, if set.
    `service.capture_payment(...)` within Razorpay's allowed capture window, or authorized
    payments get auto-refunded.
 4. Run `paykit db upgrade` against the production DB.
-5. Schedule `service.reconcile(since=...)` (e.g. every 15 min, looking back 24h) as a cron job —
-   it only re-dispatches events for objects whose status actually changed, so it's safe to run
-   this often.
-6. Do one small real payment and a refund end-to-end before announcing.
+5. Schedule `service.reconcile(since=...)` (e.g. every 15 min, looking back 24h) as a cron job.
+   It processes at most `limit` (default 500) orders and payments per call, skips objects whose
+   provider fetch fails, and only re-dispatches events for objects whose status actually changed,
+   so it's safe to run this often.
+6. Schedule `service.prune_processed_events()` daily. It deletes webhook-dedupe records older than
+   30 days so that table doesn't grow without bound.
+7. Do one small real payment and a refund end-to-end before announcing.

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import secrets
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from itertools import count
@@ -43,8 +44,10 @@ from paykit.core.models import (
 class DummyProvider:
     name = "dummy"
 
-    def __init__(self, *, secret: str = "dummy_secret") -> None:
-        self._secret = secret
+    def __init__(self, *, secret: str | None = None) -> None:
+        # Random by default: tests/demos sign through this same instance
+        # (make_checkout_result / make_webhook), so they never need to know it.
+        self._secret = secret if secret is not None else secrets.token_hex(32)
         self._orders: dict[str, ProviderOrder] = {}
         self._payments: dict[str, ProviderPayment] = {}
         self._refunds: dict[str, ProviderRefund] = {}

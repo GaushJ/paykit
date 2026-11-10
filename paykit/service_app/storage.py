@@ -6,7 +6,7 @@ restart mid-backoff doesn't silently drop a pending delivery.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -25,6 +25,7 @@ class SQLAlchemyOutboundDeliveryRepository:
         self._table = PayKitTables(table_prefix).outbound_deliveries
 
     async def dispose(self) -> None:
+        """Dispose the engine. Only call this if the engine isn't shared."""
         await self._engine.dispose()
 
     async def create(self, delivery: OutboundDelivery) -> None:
@@ -50,6 +51,42 @@ class SQLAlchemyOutboundDeliveryRepository:
             )
             result = await conn.execute(stmt)
             return [self._row_to_delivery(row._mapping) for row in result]
+
+    async def claim_due(
+        self, *, now: datetime, limit: int, lease_seconds: float
+    ) -> list[OutboundDelivery]:
+        table = self._table
+        lease_until = now + timedelta(seconds=lease_seconds)
+        async with self._engine.begin() as conn:
+            stmt = (
+                table.select()
+                .where(
+                    table.c.status == DeliveryStatus.PENDING.value,
+                    table.c.next_attempt_at <= now,
+                )
+                .order_by(table.c.next_attempt_at)
+                .limit(limit)
+            )
+            candidates = [self._row_to_delivery(r._mapping) for r in await conn.execute(stmt)]
+            claimed: list[OutboundDelivery] = []
+            for delivery in candidates:
+                # Compare-and-set on next_attempt_at: if another replica
+                # claimed this row first, its UPDATE moved next_attempt_at
+                # past `now` and ours matches zero rows. Portable across
+                # Postgres and SQLite (no SKIP LOCKED needed).
+                result = await conn.execute(
+                    table.update()
+                    .where(
+                        table.c.id == delivery.id,
+                        table.c.status == DeliveryStatus.PENDING.value,
+                        table.c.next_attempt_at <= now,
+                    )
+                    .values(next_attempt_at=lease_until)
+                )
+                if result.rowcount == 1:
+                    delivery.next_attempt_at = lease_until
+                    claimed.append(delivery)
+        return claimed
 
     async def mark_delivered(self, delivery_id: str) -> None:
         async with self._engine.begin() as conn:

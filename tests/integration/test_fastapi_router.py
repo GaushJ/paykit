@@ -170,10 +170,14 @@ def test_enforce_ownership_false_allows_reading_any_order() -> None:
     assert response.json()["order"]["id"] == someone_elses_order.id
 
 
+def allow_admin() -> None:
+    return None
+
+
 def test_refund_route_happy_path() -> None:
     service = PaymentService(provider=DummyProvider(), repository=InMemoryRepository())
     provider: DummyProvider = service._provider  # type: ignore[assignment]
-    app, _ = build_app(service)
+    app, _ = build_app(service, admin_dependency=allow_admin)
     client = TestClient(app)
 
     order = asyncio.run(service.create_order(INR_499))
@@ -210,7 +214,7 @@ def test_refund_route_requires_admin_when_configured() -> None:
 
 def test_refund_route_not_found() -> None:
     service = PaymentService(provider=DummyProvider(), repository=InMemoryRepository())
-    app, _ = build_app(service)
+    app, _ = build_app(service, admin_dependency=allow_admin)
     client = TestClient(app)
 
     response = client.post("/payments/does-not-exist/refunds", json={})

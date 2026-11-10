@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from datetime import datetime
 
+from paykit.core.errors import ProviderError
 from paykit.core.models import (
     CheckoutResult,
     Money,
@@ -33,6 +35,16 @@ from paykit.providers.razorpay.signatures import (
     verify_webhook_signature,
 )
 from paykit.providers.razorpay.webhooks import build_payment_event
+
+_PROVIDER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _seg(provider_id: str) -> str:
+    """Validate an id before interpolating it into a REST path, so a crafted
+    value (e.g. "../orders") can never redirect a call to another endpoint."""
+    if not _PROVIDER_ID_RE.fullmatch(provider_id):
+        raise ProviderError(f"invalid Razorpay id {provider_id[:80]!r}")
+    return provider_id
 
 
 def _get_header(headers: Mapping[str, str], name: str) -> str | None:
@@ -81,16 +93,16 @@ class RazorpayProvider:
         return order_from_razorpay(response)
 
     async def fetch_order(self, provider_order_id: str) -> ProviderOrder:
-        response = await self._client.get(f"/orders/{provider_order_id}")
+        response = await self._client.get(f"/orders/{_seg(provider_order_id)}")
         return order_from_razorpay(response)
 
     async def fetch_payment(self, provider_payment_id: str) -> ProviderPayment:
-        response = await self._client.get(f"/payments/{provider_payment_id}")
+        response = await self._client.get(f"/payments/{_seg(provider_payment_id)}")
         return payment_from_razorpay(response)
 
     async def capture_payment(self, provider_payment_id: str, amount: Money) -> ProviderPayment:
         response = await self._client.post(
-            f"/payments/{provider_payment_id}/capture",
+            f"/payments/{_seg(provider_payment_id)}/capture",
             json={"amount": amount.amount, "currency": amount.currency},
         )
         return payment_from_razorpay(response)
@@ -112,7 +124,7 @@ class RazorpayProvider:
         if notes:
             body["notes"] = notes
         response = await self._client.post(
-            f"/payments/{provider_payment_id}/refund", json=body
+            f"/payments/{_seg(provider_payment_id)}/refund", json=body
         )
         return refund_from_razorpay(response)
 
@@ -156,13 +168,13 @@ class RazorpayProvider:
         self, provider_subscription_id: str, *, at_cycle_end: bool
     ) -> ProviderSubscription:
         response = await self._client.post(
-            f"/subscriptions/{provider_subscription_id}/cancel",
+            f"/subscriptions/{_seg(provider_subscription_id)}/cancel",
             json={"cancel_at_cycle_end": at_cycle_end},
         )
         return subscription_from_razorpay(response)
 
     async def fetch_subscription(self, provider_subscription_id: str) -> ProviderSubscription:
-        response = await self._client.get(f"/subscriptions/{provider_subscription_id}")
+        response = await self._client.get(f"/subscriptions/{_seg(provider_subscription_id)}")
         return subscription_from_razorpay(response)
 
     # -- Signatures / webhooks -------------------------------------------

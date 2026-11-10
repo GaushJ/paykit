@@ -64,7 +64,7 @@ paykit = "paykit.cli:main"
 packages = ["paykit"]
 
 [tool.hatch.build.targets.sdist]
-include = ["paykit", "tests", "README.md", "LICENSE*", "pyproject.toml"]
+include = ["paykit", "tests", "README.md", "LICENSE*", "CHANGELOG.md", "SECURITY.md", "CONTRIBUTING.md", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

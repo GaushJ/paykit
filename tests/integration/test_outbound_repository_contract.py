@@ -109,3 +109,21 @@ async def test_mark_failed_excludes_from_due(repo) -> None:
 
     due = await repo.due(now=NOW + timedelta(days=1))
     assert due == []
+
+
+async def test_claim_due_is_exclusive_and_leased(repo) -> None:
+    for i in range(3):
+        await repo.create(make_delivery(id=f"d{i}", event_id=f"evt_{i}"))
+    now = NOW + timedelta(seconds=1)
+
+    first = await repo.claim_due(now=now, limit=2, lease_seconds=60)
+    second = await repo.claim_due(now=now, limit=10, lease_seconds=60)
+
+    assert len(first) == 2
+    assert len(second) == 1
+    assert {d.id for d in first}.isdisjoint({d.id for d in second})
+    # Nothing left to claim until the leases expire...
+    assert await repo.claim_due(now=now, limit=10, lease_seconds=60) == []
+    # ...then an un-acked delivery (e.g. crashed worker) is claimable again.
+    later = await repo.claim_due(now=now + timedelta(seconds=61), limit=10, lease_seconds=60)
+    assert len(later) == 3

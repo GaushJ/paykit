@@ -14,6 +14,7 @@ from paykit.config import PayKitSettings
 from paykit.core.errors import (
     AmountMismatchError,
     ConfigurationError,
+    DuplicateError,
     IdempotencyConflictError,
     InvalidStateError,
     NotFoundError,
@@ -41,6 +42,7 @@ __all__ = [
     "AmountMismatchError",
     "CheckoutResult",
     "ConfigurationError",
+    "DuplicateError",
     "EventBus",
     "IdempotencyConflictError",
     "InvalidStateError",

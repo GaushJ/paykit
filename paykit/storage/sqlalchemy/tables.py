@@ -10,6 +10,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     MetaData,
     String,
@@ -44,6 +45,11 @@ class PayKitTables:
                 "provider", "provider_order_id", name=f"uq_{prefix}orders_provider_order_id"
             ),
             UniqueConstraint("idempotency_key", name=f"uq_{prefix}orders_idempotency_key"),
+            # Lookups by provider id alone (webhooks, confirm) can't use the
+            # (provider, provider_order_id) unique index's leading column.
+            Index(f"ix_{prefix}orders_provider_order_id", "provider_order_id"),
+            Index(f"ix_{prefix}orders_customer_ref", "customer_ref"),
+            Index(f"ix_{prefix}orders_status_created_at", "status", "created_at"),
         )
 
         self.payments = Table(
@@ -71,6 +77,10 @@ class PayKitTables:
             UniqueConstraint(
                 "provider", "provider_payment_id", name=f"uq_{prefix}payments_provider_payment_id"
             ),
+            Index(f"ix_{prefix}payments_provider_payment_id", "provider_payment_id"),
+            Index(f"ix_{prefix}payments_order_id", "order_id"),
+            Index(f"ix_{prefix}payments_subscription_id", "subscription_id"),
+            Index(f"ix_{prefix}payments_status_created_at", "status", "created_at"),
         )
 
         self.refunds = Table(
@@ -87,6 +97,7 @@ class PayKitTables:
             UniqueConstraint(
                 "provider_refund_id", name=f"uq_{prefix}refunds_provider_refund_id"
             ),
+            Index(f"ix_{prefix}refunds_payment_id", "payment_id"),
         )
 
         self.plans = Table(
@@ -120,6 +131,7 @@ class PayKitTables:
                 "provider_subscription_id",
                 name=f"uq_{prefix}subscriptions_provider_subscription_id",
             ),
+            Index(f"ix_{prefix}subscriptions_customer_ref", "customer_ref"),
         )
 
         self.processed_events = Table(
@@ -127,6 +139,7 @@ class PayKitTables:
             self.metadata,
             Column("event_id", String, primary_key=True),
             Column("processed_at", DateTime(timezone=True), nullable=False),
+            Index(f"ix_{prefix}processed_events_processed_at", "processed_at"),
         )
 
         self.outbound_deliveries = Table(
@@ -140,4 +153,9 @@ class PayKitTables:
             Column("status", String, nullable=False),
             Column("next_attempt_at", DateTime(timezone=True), nullable=False),
             Column("last_error", String, nullable=True),
+            Index(
+                f"ix_{prefix}outbound_deliveries_status_next_attempt_at",
+                "status",
+                "next_attempt_at",
+            ),
         )

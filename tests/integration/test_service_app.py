@@ -103,7 +103,7 @@ def test_create_order_uses_body_amount_and_customer_ref() -> None:
     assert stored_order.customer_ref == "backend_user_42"
 
 
-def test_create_order_missing_amount_returns_error() -> None:
+def test_create_order_missing_amount_returns_422() -> None:
     app = create_app(settings=make_settings())
     client = TestClient(app, raise_server_exceptions=False)
 
@@ -113,7 +113,7 @@ def test_create_order_missing_amount_returns_error() -> None:
         headers={"Authorization": "Bearer devkey1"},
     )
 
-    assert response.status_code == 500
+    assert response.status_code == 422
 
 
 @respx.mock
@@ -164,3 +164,66 @@ def test_webhook_route_bad_signature_returns_400() -> None:
     )
 
     assert response.status_code == 400
+
+
+def test_full_lifespan_with_db_and_outbound_worker(tmp_path) -> None:
+    """Standalone service with a real (SQLite) DB and outbound webhooks:
+    lifespan starts the worker, /readyz checks the DB, a verified Razorpay
+    webhook is queued (not sent inline) and then delivered, and shutdown
+    stops the worker before the shared pool is disposed."""
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    from paykit.storage.sqlalchemy.repository import SQLAlchemyRepository
+
+    outbound_url = "https://client.example.com/hook"
+    settings = make_settings(
+        database_url=f"sqlite+aiosqlite:///{(tmp_path / 'svc.db').as_posix()}",
+        outbound_webhook_url=outbound_url,
+        outbound_webhook_secret="outsecret",
+    )
+    app = create_app(settings=settings)
+    service = app.state.paykit_service
+    repo: SQLAlchemyRepository = service.repository
+    asyncio.run(repo.create_all())
+    asyncio.run(repo.dispose())  # drop the pool bound to asyncio.run's loop
+
+    now = int(time.time())
+    body = json.dumps(
+        {
+            "event": "payment.failed",
+            "created_at": now,
+            "payload": {
+                "payment": {
+                    "entity": {
+                        "id": "pay_X1",
+                        "amount": 100,
+                        "currency": "INR",
+                        "status": "failed",
+                        "created_at": now,
+                    }
+                }
+            },
+        }
+    ).encode()
+    signature = hmac.new(b"whsecret", body, hashlib.sha256).hexdigest()
+
+    with respx.mock(assert_all_called=False) as mock:
+        hook = mock.post(outbound_url).mock(return_value=httpx.Response(200))
+        with TestClient(app) as client:
+            assert client.get("/readyz").json() == {"status": "ready"}
+            response = client.post(
+                "/payments/webhooks/razorpay",
+                content=body,
+                headers={"X-Razorpay-Signature": signature, "X-Razorpay-Event-Id": "evt_9"},
+            )
+            assert response.status_code == 200
+            for _ in range(100):
+                if hook.called:
+                    break
+                time.sleep(0.02)
+        assert hook.called
+        sent = hook.calls.last.request
+        assert sent.headers["X-PayKit-Event-Id"] == "evt_9"

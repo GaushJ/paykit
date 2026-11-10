@@ -133,6 +133,10 @@ async def _make_sqlalchemy_repo() -> SQLAlchemyRepository:
             "sqlite+aiosqlite:///:memory:", poolclass=StaticPool
         )
     repo = SQLAlchemyRepository(engine)
+    if database_url:
+        # A real server DB persists between tests: start each one clean.
+        async with engine.begin() as conn:
+            await conn.run_sync(repo._tables.metadata.drop_all)
     await repo.create_all()
     return repo
 

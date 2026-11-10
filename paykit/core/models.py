@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Money(BaseModel):
@@ -146,12 +146,16 @@ class PaymentEvent(_Base):
 
 
 class CheckoutResult(BaseModel):
-    """What the frontend posts back after Razorpay Checkout completes."""
+    """What the frontend posts back after Razorpay Checkout completes.
 
-    provider_order_id: str | None = None
-    provider_subscription_id: str | None = None
-    provider_payment_id: str
-    signature: str
+    Untrusted client input: lengths are bounded so a malicious client can't
+    push megabytes through signature verification or into provider URLs.
+    """
+
+    provider_order_id: str | None = Field(default=None, min_length=1, max_length=64)
+    provider_subscription_id: str | None = Field(default=None, min_length=1, max_length=64)
+    provider_payment_id: str = Field(min_length=1, max_length=64)
+    signature: str = Field(min_length=1, max_length=256)
 
 
 # --- Provider-normalized return types (adapter contract, §7.1) -------------
